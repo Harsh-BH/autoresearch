@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
     from autoresearch.config import Config
@@ -88,6 +88,7 @@ def run_loop(config: "Config", tui: "Dashboard") -> None:
     from autoresearch.git_ops import GitOps
     from autoresearch.providers import make_provider
     from autoresearch.tools import ToolExecutor
+    from autoresearch.tui import IterationRecord
 
     project_root = Path.cwd()
     results_path = project_root / "results.tsv"
@@ -105,9 +106,6 @@ def run_loop(config: "Config", tui: "Dashboard") -> None:
         system_prompt=SYSTEM_PROMPT,
     )
 
-    # Record baseline HEAD sha
-    baseline_sha = git_ops.get_head_sha()
-
     # Initialize results.tsv
     _ensure_results_tsv(results_path)
 
@@ -121,13 +119,13 @@ def run_loop(config: "Config", tui: "Dashboard") -> None:
     best_metric = None
     best_iteration = None
     conversation_history: list[dict] = []
+    history: List[IterationRecord] = []
 
     try:
         for i in range(1, (max_iter if max_iter > 0 else 10 ** 9) + 1):
             # Check time limit
             elapsed = time.monotonic() - start_time
             if time_limit > 0 and elapsed >= time_limit:
-                tui.log(f"Time limit of {config.time_limit} reached after {i - 1} iterations.")
                 break
 
             # Reset last_metric before each run
@@ -136,8 +134,15 @@ def run_loop(config: "Config", tui: "Dashboard") -> None:
             # Record pre-run state
             pre_sha = git_ops.get_head_sha()
 
-            # Update TUI
-            tui.update_status(iteration=i, max_iterations=max_iter, status="running...")
+            # Update TUI: show "running..." with no metric yet
+            elapsed = time.monotonic() - start_time
+            tui.update(
+                iteration=i,
+                metric_result=None,
+                status="running...",
+                elapsed_seconds=elapsed,
+                history=history,
+            )
 
             # Run agent
             result = agent.run(
@@ -146,10 +151,11 @@ def run_loop(config: "Config", tui: "Dashboard") -> None:
                 history=conversation_history,
             )
 
+            elapsed = time.monotonic() - start_time
+
             # Handle errors or missing metric
             if result.error or result.metric is None:
                 error_msg = result.error or "Agent did not call report_metric."
-                tui.log(f"Iter {i}: error — {error_msg}")
                 git_ops.reset_hard(pre_sha)
                 _append_result(
                     results_path,
@@ -161,7 +167,13 @@ def run_loop(config: "Config", tui: "Dashboard") -> None:
                     status="error",
                     description=error_msg,
                 )
-                # Don't accumulate errored conversation into history
+                tui.update(
+                    iteration=i,
+                    metric_result=None,
+                    status=f"error: {error_msg[:60]}",
+                    elapsed_seconds=elapsed,
+                    history=history,
+                )
                 continue
 
             metric = result.metric
@@ -192,16 +204,23 @@ def run_loop(config: "Config", tui: "Dashboard") -> None:
                 description=metric.description,
             )
 
-            # Update TUI with iteration record
-            tui.add_iteration(
+            # Build iteration record and update TUI
+            record = IterationRecord(
                 iteration=i,
-                metric_name=metric.metric_name,
-                value=metric.value,
-                higher_is_better=metric.higher_is_better,
+                metric_value=metric.value,
                 status=status,
                 description=metric.description,
-                best_value=best_metric.value if best_metric else None,
-                best_iteration=best_iteration,
+                commit_sha=commit_sha[:7] if commit_sha else None,
+            )
+            history.append(record)
+
+            elapsed = time.monotonic() - start_time
+            tui.update(
+                iteration=i,
+                metric_result=metric,
+                status=status,
+                elapsed_seconds=elapsed,
+                history=history,
             )
 
             # Accumulate conversation history for next iteration
@@ -210,7 +229,6 @@ def run_loop(config: "Config", tui: "Dashboard") -> None:
             # Re-check time limit after iteration completes
             elapsed = time.monotonic() - start_time
             if time_limit > 0 and elapsed >= time_limit:
-                tui.log(f"Time limit of {config.time_limit} reached after {i} iterations.")
                 break
 
     finally:
