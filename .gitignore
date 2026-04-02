@@ -14,3 +14,6 @@ AGENTS.md
 
 # Dev / scratch
 dev/
+
+# Claude Code internals
+.claude/
