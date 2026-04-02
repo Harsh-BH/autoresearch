@@ -1,0 +1,13 @@
+# autoresearch configuration
+# Model: "provider/model-name"
+# Providers: anthropic, openai, ollama
+model: "anthropic/claude-sonnet-4-6"
+
+# Stop after this many iterations (set to 0 for unlimited)
+max_iterations: 50
+
+# Stop after this wall-clock time (e.g. "30m", "2h", "8h")
+time_limit: "8h"
+
+# API key (leave as env var reference, or paste directly)
+# api_key: "${ANTHROPIC_API_KEY}"
