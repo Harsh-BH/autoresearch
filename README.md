@@ -1,91 +1,198 @@
 # autoresearch
 
-![teaser](progress.png)
+An autonomous experimentation loop for any software project. Drop it into any repo, describe your goal in `program.md`, and let an AI agent experiment, benchmark, and improve your code overnight — keeping changes that help, discarding ones that don't.
 
-*One day, frontier AI research used to be done by meat computers in between eating, sleeping, having other fun, and synchronizing once in a while using sound wave interconnect in the ritual of "group meeting". That era is long gone. Research is now entirely the domain of autonomous swarms of AI agents running across compute cluster megastructures in the skies. The agents claim that we are now in the 10,205th generation of the code base, in any case no one could tell if that's right or wrong as the "code" is now a self-modifying binary that has grown beyond human comprehension. This repo is the story of how it all began. -@karpathy, March 2026*.
+Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch), generalized beyond ML training into a language-agnostic plugin.
 
-The idea: give an AI agent a small but real LLM training setup and let it experiment autonomously overnight. It modifies the code, trains for 5 minutes, checks if the result improved, keeps or discards, and repeats. You wake up in the morning to a log of experiments and (hopefully) a better model. The training code here is a simplified single-GPU implementation of [nanochat](https://github.com/karpathy/nanochat). The core idea is that you're not touching any of the Python files like you normally would as a researcher. Instead, you are programming the `program.md` Markdown files that provide context to the AI agents and set up your autonomous research org. The default `program.md` in this repo is intentionally kept as a bare bones baseline, though it's obvious how one would iterate on it over time to find the "research org code" that achieves the fastest research progress, how you'd add more agents to the mix, etc. A bit more context on this project is here in this [tweet](https://x.com/karpathy/status/2029701092347630069) and [this tweet](https://x.com/karpathy/status/2031135152349524125).
+---
 
 ## How it works
 
-The repo is deliberately kept small and only really has three files that matter:
+1. You write `program.md` — describe what you want improved and what "better" means
+2. The agent explores your project, decides what to change and how to benchmark it
+3. It makes a focused change, runs the benchmark, and reports a metric
+4. If the metric improved → `git commit` (keep). If not → `git reset` (discard)
+5. Repeat, with a live terminal dashboard showing progress
 
-- **`prepare.py`** — fixed constants, one-time data prep (downloads training data, trains a BPE tokenizer), and runtime utilities (dataloader, evaluation). Not modified.
-- **`train.py`** — the single file the agent edits. Contains the full GPT model, optimizer (Muon + AdamW), and training loop. Everything is fair game: architecture, hyperparameters, optimizer, batch size, etc. **This file is edited and iterated on by the agent**.
-- **`program.md`** — baseline instructions for one agent. Point your agent here and let it go. **This file is edited and iterated on by the human**.
+The agent drives itself via tool calls (`read_file`, `write_file`, `run_command`, `list_files`, `report_metric`). It decides the benchmark and metric — you just describe the goal.
 
-By design, training runs for a **fixed 5-minute time budget** (wall clock, excluding startup/compilation), regardless of the details of your compute. The metric is **val_bpb** (validation bits per byte) — lower is better, and vocab-size-independent so architectural changes are fairly compared.
+```
+┌─ autoresearch ──────────────── iter 12/50 ── 1h 23m elapsed ─┐
+│ Task: Optimize API response time                              │
+├─ Current Experiment ──────────────────────────────────────────┤
+│ "Caching database query results in memory"  Status: running...│
+├─ Metric: api_latency_ms (lower is better) ────────────────────┤
+│ Current: 142ms    Best: 98ms (iter 7)                        │
+│ History: ▄▆█▅▃▂▄▃▂▁▂▃                                        │
+├─ Last 5 Iterations ────────────────────────────────────────────┤
+│  #11  112ms  ✗  "Added index on user_id"                     │
+│  #10   98ms ★✓  "Connection pooling"                         │
+│  #09  134ms  ✗  "Async refactor attempt"                     │
+└──────────────────────────────── [q] quit  [p] pause ──────────┘
+```
 
-If you are new to neural networks, this ["Dummy's Guide"](https://x.com/hooeem/status/2030720614752039185) looks pretty good for a lot more context.
+---
 
 ## Quick start
 
-**Requirements:** A single NVIDIA GPU (tested on H100), Python 3.10+, [uv](https://docs.astral.sh/uv/).
+```bash
+pip install autoresearch-plugin
+
+cd your-project
+autoresearch init        # drops program.md + autoresearch.yaml
+```
+
+Edit `program.md` to describe your task:
+
+```markdown
+# Task
+Reduce the p50 latency of the /api/search endpoint.
+The benchmark is: run `python bench/latency.py` and extract the p50_ms value.
+Lower is better.
+```
+
+Edit `autoresearch.yaml` to set your model and API key:
+
+```yaml
+model: "anthropic/claude-sonnet-4-6"
+max_iterations: 50
+time_limit: "8h"
+api_key: "${ANTHROPIC_API_KEY}"
+```
+
+Then run:
 
 ```bash
-
-# 1. Install uv project manager (if you don't already have it)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 2. Install dependencies
-uv sync
-
-# 3. Download data and train tokenizer (one-time, ~2 min)
-uv run prepare.py
-
-# 4. Manually run a single training experiment (~5 min)
-uv run train.py
+autoresearch run
 ```
 
-If the above commands all work ok, your setup is working and you can go into autonomous research mode.
+---
 
-## Running the agent
+## Configuration
 
-Simply spin up your Claude/Codex or whatever you want in this repo (and disable all permissions), then you can prompt something like:
+`autoresearch.yaml` (created by `autoresearch init`):
 
+```yaml
+# Provider/model — supports anthropic, openai, ollama
+model: "anthropic/claude-sonnet-4-6"
+
+# Stop after N iterations (0 = unlimited)
+max_iterations: 50
+
+# Stop after this wall-clock time
+time_limit: "8h"      # supports: 30m, 2h, 8h, etc.
+
+# API key — use env var reference or paste directly
+api_key: "${ANTHROPIC_API_KEY}"
 ```
-Hi have a look at program.md and let's kick off a new experiment! let's do the setup first.
+
+### Supported models
+
+| Config value | Provider |
+|---|---|
+| `anthropic/claude-sonnet-4-6` | Anthropic API |
+| `anthropic/claude-opus-4-6` | Anthropic API |
+| `openai/gpt-4o` | OpenAI API |
+| `openai/gpt-4.1` | OpenAI API |
+| `ollama/llama3` | Ollama (local, `localhost:11434`) |
+
+---
+
+## CLI commands
+
+```bash
+autoresearch init              # set up program.md + autoresearch.yaml in cwd
+autoresearch run               # start the experiment loop
+autoresearch run --iterations 20 --time-limit 2h
+autoresearch status            # print results.tsv as a table
 ```
 
-The `program.md` file is essentially a super lightweight "skill".
+---
 
 ## Project structure
 
 ```
-prepare.py      — constants, data prep + runtime utilities (do not modify)
-train.py        — model, optimizer, training loop (agent modifies this)
-program.md      — agent instructions
-pyproject.toml  — dependencies
+your-project/
+├── program.md          ← describe your goal here (you write this)
+├── autoresearch.yaml   ← model, iterations, time limit (you configure this)
+├── results.tsv         ← experiment log (auto-generated, not committed)
+└── ... your code ...
 ```
 
-## Design choices
+The plugin lives separately — nothing in your project gets modified except via the agent's own tool calls, which are all governed by what you write in `program.md`.
 
-- **Single file to modify.** The agent only touches `train.py`. This keeps the scope manageable and diffs reviewable.
-- **Fixed time budget.** Training always runs for exactly 5 minutes, regardless of your specific platform. This means you can expect approx 12 experiments/hour and approx 100 experiments while you sleep. There are two upsides of this design decision. First, this makes experiments directly comparable regardless of what the agent changes (model size, batch size, architecture, etc). Second, this means that autoresearch will find the most optimal model for your platform in that time budget. The downside is that your runs (and results) become not comparable to other people running on other compute platforms.
-- **Self-contained.** No external dependencies beyond PyTorch and a few small packages. No distributed training, no complex configs. One GPU, one file, one metric.
+---
 
-## Platform support
+## How the loop works
 
-This code currently requires that you have a single NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
+```
+autoresearch run
+      │
+      ▼
+  Read program.md + project context
+      │
+      ▼
+  ┌─── Agent (tool-call loop) ──────────────────┐
+  │  list_files → read_file → write_file        │
+  │  run_command (your tests/benchmark)         │
+  │  report_metric(name, value, higher_better)  │
+  └─────────────────────────────────────────────┘
+      │
+      ├── metric improved? → git commit (keep)
+      └── metric worse?    → git reset  (discard)
+      │
+      ▼
+  results.tsv updated → TUI refreshes → next iteration
+```
 
-Seeing as there seems to be a lot of interest in tinkering with autoresearch on much smaller compute platforms than an H100, a few extra words. If you're going to try running autoresearch on smaller computers (Macbooks etc.), I'd recommend one of the forks below. On top of this, here are some recommendations for how to tune the defaults for much smaller models for aspiring forks:
+Each iteration the agent makes **one focused change**, measures it, and decides. The git history becomes a clean record of what worked.
 
-1. To get half-decent results I'd use a dataset with a lot less entropy, e.g. this [TinyStories dataset](https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean). These are GPT-4 generated short stories. Because the data is a lot narrower in scope, you will see reasonable results with a lot smaller models (if you try to sample from them after training).
-2. You might experiment with decreasing `vocab_size`, e.g. from 8192 down to 4096, 2048, 1024, or even - simply byte-level tokenizer with 256 possibly bytes after utf-8 encoding.
-3. In `prepare.py`, you'll want to lower `MAX_SEQ_LEN` a lot, depending on the computer even down to 256 etc. As you lower `MAX_SEQ_LEN`, you may want to experiment with increasing `DEVICE_BATCH_SIZE` in `train.py` slightly to compensate. The number of tokens per fwd/bwd pass is the product of these two.
-4. Also in `prepare.py`, you'll want to decrease `EVAL_TOKENS` so that your validation loss is evaluated on a lot less data.
-5. In `train.py`, the primary single knob that controls model complexity is the `DEPTH` (default 8, here). A lot of variables are just functions of this, so e.g. lower it down to e.g. 4.
-6. You'll want to most likely use `WINDOW_PATTERN` of just "L", because "SSSL" uses alternating banded attention pattern that may be very inefficient for you. Try it.
-7. You'll want to lower `TOTAL_BATCH_SIZE` a lot, but keep it powers of 2, e.g. down to `2**14` (~16K) or so even, hard to tell.
+---
 
-I think these would be the reasonable hyperparameters to play with. Ask your favorite coding agent for help and copy paste them this guide, as well as the full source code.
+## results.tsv
 
-## Notable forks
+After each run, results are appended to `results.tsv`:
 
-- [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos) (MacOS)
-- [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) (MacOS)
-- [jsegov/autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx) (Windows)
-- [andyluo7/autoresearch](https://github.com/andyluo7/autoresearch) (AMD)
+```
+iteration  commit   metric_name      value   higher_is_better  status   description
+1          a1b2c3d  api_latency_ms   142.0   false             keep     baseline
+2          b2c3d4e  api_latency_ms   98.0    false             keep     connection pooling
+3          HEAD     api_latency_ms   112.0   false             discard  index on user_id
+```
+
+View a summary any time with:
+
+```bash
+autoresearch status
+```
+
+---
+
+## Writing a good program.md
+
+The quality of `program.md` directly determines result quality. Be specific:
+
+**Good:**
+```markdown
+# Task
+Improve test coverage of src/utils/parser.py.
+Run `pytest --cov=src/utils/parser --cov-report=term-missing` and extract
+the percentage from the "TOTAL" line. Higher is better.
+Do not modify test files directly — improve the source code to be more testable.
+```
+
+**Too vague:**
+```markdown
+Make the code better.
+```
+
+Tips:
+- Specify the exact command to run for benchmarking
+- Tell it where to extract the metric from (stdout, a file, etc.)
+- Specify which files are in/out of scope if needed
+- Give it a hint about what kind of improvements to try
+
+---
 
 ## License
 
